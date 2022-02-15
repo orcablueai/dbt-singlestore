@@ -34,7 +34,7 @@ start-cluster-in-a-box() {
     docker run -i --init \
           --name ${CONTAINER_NAME} \
           -e LICENSE_KEY=${LICENSE_KEY} \
-          -e ROOT_PASSWORD=${ROOT_PASSWORD} \
+          -e ROOT_PASSWORD=${SQL_USER_PASSWORD} \
           -p $EXTERNAL_MASTER_PORT:3306 -p $EXTERNAL_LEAF_PORT:3307 \
           ${IMAGE_NAME}
   fi
@@ -44,7 +44,7 @@ start-cluster-in-a-box() {
   singlestore-wait-start() {
     echo -n "Waiting for SingleStore to start..."
     while true; do
-      if mysql -u root -h 127.0.0.1 -P $EXTERNAL_MASTER_PORT -p"${ROOT_PASSWORD}" -e "select 1" >/dev/null 2>/dev/null; then
+      if mysql -u root -h 127.0.0.1 -P $EXTERNAL_MASTER_PORT -p"${SQL_USER_PASSWORD}" -e "select 1" >/dev/null 2>/dev/null; then
           break
       fi
       echo -n "."
@@ -58,15 +58,15 @@ start-cluster-in-a-box() {
   echo
   echo "Ensuring child nodes are connected using container IP"
   CONTAINER_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${CONTAINER_NAME})
-  CURRENT_LEAF_IP=$(mysql -u root -h 127.0.0.1 -P 3306 -p"${ROOT_PASSWORD}" --batch -N -e 'SELECT HOST FROM INFORMATION_SCHEMA.LEAVES')
+  CURRENT_LEAF_IP=$(mysql -u root -h 127.0.0.1 -P 3306 -p"${SQL_USER_PASSWORD}" --batch -N -e 'SELECT HOST FROM INFORMATION_SCHEMA.LEAVES')
   if [[ ${CONTAINER_IP} != "${CURRENT_LEAF_IP}" ]]; then
     # remove leaf with current ip
-    mysql -u root -h 127.0.0.1 -P $EXTERNAL_MASTER_PORT -p"${ROOT_PASSWORD}" --batch -N -e "REMOVE LEAF '${CURRENT_LEAF_IP}':3307"
+    mysql -u root -h 127.0.0.1 -P $EXTERNAL_MASTER_PORT -p"${SQL_USER_PASSWORD}" --batch -N -e "REMOVE LEAF '${CURRENT_LEAF_IP}':3307"
     # add leaf with correct ip
-    mysql -u root -h 127.0.0.1 -P $EXTERNAL_MASTER_PORT -p"${ROOT_PASSWORD}" --batch -N -e "ADD LEAF root:'${ROOT_PASSWORD}'@'${CONTAINER_IP}':3307"
+    mysql -u root -h 127.0.0.1 -P $EXTERNAL_MASTER_PORT -p"${SQL_USER_PASSWORD}" --batch -N -e "ADD LEAF root:'${SQL_USER_PASSWORD}'@'${CONTAINER_IP}':3307"
   fi
 
-  mysql -u root -h 127.0.0.1 -P $EXTERNAL_MASTER_PORT -p"${ROOT_PASSWORD}" --batch -N -e "DROP DATABASE IF EXISTS dbt_test; CREATE DATABASE dbt_test"
+  mysql -u root -h 127.0.0.1 -P $EXTERNAL_MASTER_PORT -p"${SQL_USER_PASSWORD}" --batch -N -e "DROP DATABASE IF EXISTS dbt_test; CREATE DATABASE dbt_test"
 
   export S2_HOST=127.0.0.1
   export S2_PORT=$EXTERNAL_MASTER_PORT

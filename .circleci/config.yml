@@ -26,11 +26,7 @@ jobs:
       - run:
           name: Start SingleStore cluster and run integration tests
           command: |
-            source .env3/bin/activate
-            source ./.circleci/setup-cluster.sh start $CLUSTER_TYPE
-            export S2_PASSWORD=$ROOT_PASSWORD  # project UI env-var reference
-            pytest test/singlestore.dbtspec --no-drop-schema
-            ./.circleci/setup-cluster.sh terminate $CLUSTER_TYPE
+            ./.circleci/run-tests.sh
 
 workflows:
   test:

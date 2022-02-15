@@ -2,6 +2,8 @@ import json
 import os
 import pymysql
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3 import Retry
 import sys
 from time import sleep
 from typing import Dict, Optional
@@ -9,8 +11,8 @@ from typing import Dict, Optional
 BASE_URL = "https://api.singlestore.com"
 CLUSTERS_PATH = "/v0beta/clusters"
 
-ROOT_PASSWORD = os.getenv("ROOT_PASSWORD")
-S2MS_API_KEY = os.getenv("S2MS_API_KEY")
+SQL_USER_PASSWORD = os.getenv("SQL_USER_PASSWORD")  # project UI env-var reference
+S2MS_API_KEY = os.getenv("S2MS_API_KEY")  # project UI env-var reference
 
 HEADERS = {
     "Authorization": f"Bearer {S2MS_API_KEY}",
@@ -18,14 +20,14 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-CLUSTER_NAME = "connectors-ci-test-cluster"
+CLUSTER_NAME = "dbt-connector-ci-test-cluster"
 AWS_EU_CENTRAL_REGION = "7e7ffd27-20f7-44b6-87e6-e72828a81ac7"
 AUTO_TERMINATE_MINUTES = 20
 
 PAYLOAD_FOR_CREATE = {
     "name": CLUSTER_NAME,
     "regionID": AWS_EU_CENTRAL_REGION,
-    "adminPassword": ROOT_PASSWORD,
+    "adminPassword": SQL_USER_PASSWORD,
     "expiresAt": f"{AUTO_TERMINATE_MINUTES}m",
     "firewallRanges": [
         "0.0.0.0/0"
@@ -35,20 +37,33 @@ PAYLOAD_FOR_CREATE = {
 HOSTNAME_TMPL = "svc-{}-ddl.aws-frankfurt-1.svc.singlestore.com"
 CLUSTER_ID_FILE = "CLUSTER_ID"
 
+TOTAL_RETRIES = 5
+S2MS_REQUEST_TIMEOUT = 60
 
-def create_cluster() -> str:
+
+def request_with_retry(request_method, url, data=None, headers=HEADERS):
     try:
-        cl_id = requests.post(BASE_URL + CLUSTERS_PATH, data=json.dumps(PAYLOAD_FOR_CREATE), headers=HEADERS)
+        with requests.Session() as s:
+            retries = Retry(
+                total=TOTAL_RETRIES,
+                backoff_factor=0.2,
+                status_forcelist=[500, 502, 503, 504])
+
+            s.mount('http://', HTTPAdapter(max_retries=retries))
+            s.mount('https://', HTTPAdapter(max_retries=retries))
+
+            return s.request(request_method, url, data=data, headers=headers, timeout=S2MS_REQUEST_TIMEOUT)
     except requests.exceptions.RequestException as e:
         raise SystemExit(e)
+
+
+def create_cluster() -> str:
+    cl_id = request_with_retry("POST", BASE_URL + CLUSTERS_PATH, data=json.dumps(PAYLOAD_FOR_CREATE))
     return cl_id.json()["clusterID"]
 
 
 def get_cluster_info(cluster_id: str) -> Dict:
-    try:
-        cl_id = requests.get(BASE_URL + CLUSTERS_PATH + f"/{cluster_id}", headers=HEADERS)
-    except requests.exceptions.RequestException as e:
-        raise SystemExit(e)
+    cl_id = request_with_retry("GET", BASE_URL + CLUSTERS_PATH + f"/{cluster_id}")
     return cl_id.json()
 
 
@@ -71,29 +86,29 @@ def wait_start(cluster_id: str) -> None:
 
 
 def terminate_cluster(cluster_id: str) -> None:
-    try:
-        requests.delete(BASE_URL + CLUSTERS_PATH + f"/{cluster_id}", headers=HEADERS)
-    except requests.exceptions.RequestException as e:
-        raise SystemExit(e)
+    print(f"Terminating cluster {cluster_id}...")
+    request_with_retry("DELETE", BASE_URL + CLUSTERS_PATH + f"/{cluster_id}")
 
 
 def check_connection(cluster_id: str, create_db: Optional[str] = None):
     conn = pymysql.connect(
         user="admin",
-        password=ROOT_PASSWORD,
+        password=SQL_USER_PASSWORD,
         host=HOSTNAME_TMPL.format(cluster_id),
         port=3306)
 
     cur = conn.cursor()
-    cur.execute("SELECT NOW():>TEXT")
-    res = cur.fetchall()
-    print(f"Successfully connected to {cluster_id} at {res[0][0]}")
-    if create_db is not None:
-        cur.execute(f"DROP DATABASE IF EXISTS {create_db}")
-        cur.execute(f"CREATE DATABASE {create_db}")
+    try:
+        cur.execute("SELECT NOW():>TEXT")
+        res = cur.fetchall()
+        print(f"Successfully connected to {cluster_id} at {res[0][0]}")
 
-    cur.close()
-    conn.close()
+        if create_db is not None:
+            cur.execute(f"DROP DATABASE IF EXISTS {create_db}")
+            cur.execute(f"CREATE DATABASE {create_db}")
+    finally:
+        cur.close()
+        conn.close()
 
 
 if __name__ == "__main__":
@@ -111,7 +126,10 @@ if __name__ == "__main__":
             f.write(new_cl_id)
         wait_start(new_cl_id)
         check_connection(new_cl_id, db_name)
+        exit(0)
+
     if command == "terminate":
         with open(CLUSTER_ID_FILE, "r") as f:
             cl_id = f.read()
         terminate_cluster(cl_id)
+        exit(0)
