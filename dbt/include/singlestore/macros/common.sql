@@ -29,6 +29,7 @@
 
 {% macro singlestore__create_table_as(temporary, relation, sql) -%}
     {%- set sql_header = config.get('sql_header', none) -%}
+
     {%- set primary_key = config.get('primary_key', none) -%} {# PRIMARY KEY (primary_key) #}
     {%- set sort_key = config.get('sort_key', none) -%} {# SORT KEY (sort_key) #}
     {%- set shard_key = config.get('shard_key', none) -%} {# SHARD KEY (shard_key) #}
@@ -67,13 +68,18 @@
     {% endif -%}
 
     {{ sql_header if sql_header is not none }}
-
-    {% if temporary -%}
-        {% set storage_type = 'rowstore temporary' -%}
-    {% elif config.get('storage_type') == 'rowstore' -%}
+    {%- set storage_type = config.get('storage_type', 'columnstore') -%}
+    
+    {% if storage_type == 'columnstore' -%}
+        {% set storage_type = 'columnstore' -%}
+    {% elif storage_type == 'rowstore' -%}
         {% set storage_type = 'rowstore' -%}
     {% else -%}
         {% set storage_type = '' -%}
+    {% endif -%}
+    
+    {% if temporary -%}
+        {% set storage_type = storage_type + ' temporary' -%}
     {% endif -%}
 
     create {{ storage_type }} table
@@ -206,6 +212,7 @@
 {%- endmacro %}
 
 
+
 {% macro singlestore__get_create_index_sql(relation, index_dict) -%}
     {%- set index_config = adapter.parse_index(index_dict) -%}
     {%- set comma_separated_columns = ", ".join(index_config.columns) -%}
@@ -218,3 +225,46 @@
         using {{ index_config.type }}
     {%- endif %}
 {%- endmacro %}
+
+{% macro singlestore__alter_column_type(relation, column_name, new_column_type) -%}
+  {#
+    1. Create a new column (w/ temp name and correct type)
+    2. Copy data over to it
+    3. Drop the existing column (cascade!)
+    4. Rename the new column to existing column
+  #}
+  {%- set tmp_column = column_name + "__dbt_alter" -%}
+
+  {% call statement('alter_column_type') %}
+    alter table {{ relation }} add column {{ adapter.quote(tmp_column) }} {{ new_column_type }};
+    update {{ relation }} set {{ adapter.quote(tmp_column) }} = {{ adapter.quote(column_name) }};
+    alter table {{ relation }} drop column {{ adapter.quote(column_name) }} cascade;
+    alter table {{ relation }} change {{ adapter.quote(tmp_column) }} {{ adapter.quote(column_name) }}
+  {% endcall %}
+
+{% endmacro %}
+
+{% macro singlestore__type_string() %}
+    char
+{% endmacro %}
+
+{% macro singlestore__datediff(first_date, second_date, datepart) %}
+
+    TIMESTAMPDIFF (
+        {{ datepart }},
+        {{ first_date }},
+        {{ second_date }}
+        )
+
+{% endmacro %}
+
+{% macro singlestore__dateadd(datepart, interval, from_date_or_timestamp) %}
+
+    TIMESTAMPADD (
+        {{ datepart }},
+        {{ interval }},
+        {{ from_date_or_timestamp }}
+        )
+
+{% endmacro %}
+
